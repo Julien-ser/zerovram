@@ -14,7 +14,7 @@ import argparse, difflib, fnmatch, html.parser, json, os, re, subprocess, sys, t
 import urllib.error, urllib.request
 from pathlib import Path
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 ROOT = Path.cwd().resolve()
 SKIP = {".git", "node_modules", ".venv", "venv", "site-packages", "__pycache__", ".obsidian", ".trash",
         "dist", "build", ".tinyagent"}
@@ -166,10 +166,14 @@ def grep(pattern, glob="*", path="."):
     return "\n".join(out) or "no matches"
 
 
-def read_file(path, start=1, lines=250):
+def read_file(path, start=1, lines=250, stop=None, end=None, **_):
+    # Local models often guess `stop`/`end` (last line) instead of `lines`; accept them instead of erroring.
     text, _ = read_text(safe(path))
     all_lines = text.split("\n")
     start = max(1, int(start))
+    last = stop or end
+    if last is not None and str(last).isdigit():
+        lines = max(1, int(last) - start + 1)
     chunk = all_lines[start - 1:start - 1 + int(lines)]
     body = "\n".join(f"{i:>5}| {ln}" for i, ln in enumerate(chunk, start))
     end = start - 1 + len(chunk)
@@ -306,6 +310,7 @@ def system_prompt():
 - After changing code, verify it (run the tests or re-read the file) when you can.
 - Do only what the latest user message asks. Never delete or weaken tests to make them pass.
 - If a tool is blocked or the user denies it, stop and tell the user. Do not work around it.
+- To count, filter or aggregate data in files, write a short Python script and run it; do not read everything yourself.
 - Prefer few, targeted tool calls. Paths are relative to the folder.
 - Finish with a short answer: what you found or changed, and the files involved.{project_instructions()}"""
 

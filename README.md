@@ -198,13 +198,15 @@ Iris Xe. Times are wall-clock.
 | Add a docstring | 18 s | 30 s | 1.7x | Local wrote an 8-line docstring although the project's `AGENTS.md` asked for one line |
 | Read the project rules | 12 s | 50 s | 4.2x | Same. The local time includes about 35 s of first-time model load. Warm, it is about 15 s |
 | Fix 2 bugs and run the tests | 30 s | 83 s | 2.8x | Same fix. Local used more steps: an extra read, plus re-reading after the edit |
-| Count items across a 400-line file | 15 s | 306 s | 20x | Both correct. The cloud agent wrote one script. Local first tried to read the file in chunks, then fell back to a script after 10 steps |
+| Count items across a 400-line file | 15 s | 244 s | 16x | Both correct. The cloud agent wrote one script. Local read a chunk and tried several greps first, then wrote a script at step 9 of 11 |
 
 **What the numbers mean:**
 
 - **Small, focused edits:** about 2–3x slower. Comfortably usable.
-- **Tasks with a lot of input** (big files, many search results): 10–20x slower. Reading input at about 67 tok/s is the
-  bottleneck, and every context trim forces the model to re-read the prompt.
+- **Tasks with a lot of input or exploration:** 10–20x slower. Reading input at about 67 tok/s is part of it.
+  The bigger part is strategy: the local model tries reading and grepping before it writes a script. A system-prompt
+  hint ("count with a script") cut this task from 352 s and 15 steps to 244 s and 11 steps. More context does not help:
+  the 352 s run used the full 16k window and never trimmed anything.
 - **Judgment:** the local model follows project rules less reliably and takes more detours. Earlier versions of
   tinyagent also caught it trying to work around a blocked action. Version 0.3.1 hides blocked tools and tells it to
   stop instead.

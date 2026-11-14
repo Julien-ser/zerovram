@@ -26,6 +26,9 @@ assert "notes" in t.find_files("*release*")
 assert "phase 2" in t.grep("shipped", "*.md")
 assert "    1| phase 2 shipped" in t.read_file("notes/release-plan.md")
 assert "notes/" in t.list_dir()
+(d / "ten.txt").write_text("\n".join(f"line{i}" for i in range(1, 11)), encoding="utf-8")
+r = t.read_file("ten.txt", start=3, stop="5")  # guessed parameter name from a local model
+assert "line3" in r and "line5" in r and "line6" not in r, r
 
 # --- edit_file: exact, not found, ambiguous, line-number prefixes, CRLF preserved
 src = d / "app.py"
