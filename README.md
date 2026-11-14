@@ -184,6 +184,25 @@ Settings (environment variables): `TINYAGENT_MODEL`, `TINYAGENT_CTX` (default 16
   prompt prefix.
 - **Research:** "find and summarize" over a large folder of markdown notes. Six tool calls, about 4 minutes.
 
+## delegate.py: save a cloud agent's tokens
+
+Cloud agents pay for every token they read. `delegate.py` lets them, or you, hand bulk reading to the local model.
+Only a short result comes back.
+
+```
+python delegate.py summarize FILE [FILE ...] [--focus "..."] [--bullets 8]
+python delegate.py find "QUESTION" FOLDER [--glob "*.md"] [--max-files 40]   # triage: which files matter?
+python delegate.py ask "QUESTION" FILE [FILE ...]
+```
+
+Measured: a 36 KB document (about 7,500 tokens) came back as a 10-bullet summary of about 550 tokens, 93% fewer
+tokens for the cloud agent. The cost is time: about 5 minutes on the iGPU, so run it in the background.
+
+- **Cache:** results are cached by file content, so re-runs are instant.
+- **Big files:** split into parts that fit the 16k context, then the summaries are merged.
+- **Fallback:** exit code 2 means Ollama is unreachable, so the caller reads the files itself.
+- **Accuracy:** treat the output as a lead. Confirm exact facts in the source before you act on them.
+
 ## How it compares to a cloud agent
 
 zerovram is a **local alternative**, not a replacement for a frontier cloud agent. We ran the same tasks in the same
