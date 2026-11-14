@@ -445,22 +445,30 @@ def elide_old_outputs(keep_last=6):
     return freed
 
 
-def summarize():
-    """Summarize everything before the current request, then keep the current request (and its progress) verbatim.
-    Dropping the current request would make the model forget what the user just asked."""
-    users = [i for i, m in enumerate(S.messages) if m["role"] == "user"]
+def summarize(keep_recent=6):
+    """Summarize the earlier conversation AND the older steps of the current request; keep the request itself and
+    the last few steps verbatim. Summarizing only what came before the request freed nothing during one long
+    request, so every step re-compacted (a full re-read of the prompt each time) and tool output shrank to ~20 lines."""
+    users = [i for i, m in enumerate(S.messages) if m["role"] == "user" and not m["content"].startswith("[Background")]
     cut = users[-1] if users else len(S.messages)
-    head, tail = S.messages[:cut], S.messages[cut:]
-    if len(head) <= 1:  # nothing before the current request to summarize
+    head, request = S.messages[1:cut], S.messages[cut:cut + 1]
+    steps = S.messages[cut + 1:]
+    keep = max(0, len(steps) - keep_recent)
+    while keep > 0 and steps[keep]["role"] == "tool":  # never split a tool call from its result
+        keep -= 1
+    old, recent = steps[:keep], steps[keep:]
+    only_old_summary = len(head) == 2 and head[0]["content"].startswith("[Background")
+    if not old and (not head or only_old_summary):  # nothing new to summarize; a call would only waste minutes
         return
-    info("  compacting: summarizing the earlier conversation...")
-    req = head + [{"role": "user", "content":
-                   "Summarize the conversation so far in under 150 words: what the user asked, what was done, files "
-                   "changed, and key facts found. Do not list follow-up tasks. No tool calls."}]
+    info("  compacting: summarizing the earlier conversation and older steps...")
+    req = [S.messages[0]] + head + request + old + [{"role": "user", "content":
+           "Summarize the conversation so far in under 200 words: what the user asked, what was done, files read "
+           "or changed, and key facts found (exact names, paths, line numbers). Do not add new tasks. No tool calls."}]
     text = "".join(v for k, v in stream(req) if k == "text")
     S.messages = [S.messages[0],
-                  {"role": "user", "content": f"[Background: summary of the earlier conversation. Not a request.]\n{text}"},
-                  {"role": "assistant", "content": "Noted."}] + tail
+                  {"role": "user", "content": f"[Background: summary of the earlier conversation and your earlier "
+                                              f"steps on the request below. Not a request.]\n{text}"},
+                  {"role": "assistant", "content": "Noted."}] + request + recent
     S.last_in = 0
 
 

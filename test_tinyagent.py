@@ -113,6 +113,19 @@ t.summarize()
 assert [m["role"] for m in t.S.messages] == ["system", "user", "assistant", "user", "assistant"]
 assert t.S.messages[3]["content"] == "NEW QUESTION" and "Not a request" in t.S.messages[1]["content"]
 
+# --- regression: one long request must shrink too (it re-compacted every step and freed nothing)
+calls_seen = []
+t.stream = lambda msgs: (calls_seen.append(1), iter([("text", "read files a, b")]))[1]
+steps = []
+for i in range(20):
+    steps += [{"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}"}]},
+              {"role": "tool", "content": "x" * 500}]
+t.S.messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "BIG TASK"}] + steps
+t.summarize()
+assert len(t.S.messages) <= 4 + 6 + 1 and t.S.messages[3]["content"] == "BIG TASK", [m["role"] for m in t.S.messages]
+assert t.S.messages[4]["role"] == "assistant", "kept steps must not start with an orphaned tool result"
+n = len(calls_seen); t.summarize(); assert len(calls_seen) == n, "re-summarized with nothing new to summarize"
+
 # --- regression: read-only mode hides write tools from the model
 t.S.mode = "readonly"
 names = {x["function"]["name"] for x in t.tool_schema()}
