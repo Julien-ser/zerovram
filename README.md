@@ -184,6 +184,36 @@ Settings (environment variables): `TINYAGENT_MODEL`, `TINYAGENT_CTX` (default 16
   prompt prefix.
 - **Research:** "find and summarize" over a large folder of markdown notes. Six tool calls, about 4 minutes.
 
+## How it compares to a cloud agent
+
+zerovram is a **local alternative**, not a replacement for a frontier cloud agent. We ran the same tasks in the same
+small project twice: once with a frontier cloud coding agent, and once with tinyagent and `qwen3-coder:30b` on the
+Iris Xe. Times are wall-clock.
+
+![Same tasks: cloud frontier agent vs tinyagent on an iGPU](docs/vs_cloud.png)
+
+| Task | Cloud agent | tinyagent (local) | Slower by | Result quality |
+|---|---|---|---|---|
+| Explain a file | 9 s | 21 s | 2.3x | Same |
+| Add a docstring | 18 s | 30 s | 1.7x | Local wrote an 8-line docstring although the project's `AGENTS.md` asked for one line |
+| Read the project rules | 12 s | 50 s | 4.2x | Same. The local time includes about 35 s of first-time model load. Warm, it is about 15 s |
+| Fix 2 bugs and run the tests | 30 s | 83 s | 2.8x | Same fix. Local used more steps: an extra read, plus re-reading after the edit |
+| Count items across a 400-line file | 15 s | 306 s | 20x | Both correct. The cloud agent wrote one script. Local first tried to read the file in chunks, then fell back to a script after 10 steps |
+
+**What the numbers mean:**
+
+- **Small, focused edits:** about 2–3x slower. Comfortably usable.
+- **Tasks with a lot of input** (big files, many search results): 10–20x slower. Reading input at about 67 tok/s is the
+  bottleneck, and every context trim forces the model to re-read the prompt.
+- **Judgment:** the local model follows project rules less reliably and takes more detours. Earlier versions of
+  tinyagent also caught it trying to work around a blocked action. Version 0.3.1 hides blocked tools and tells it to
+  stop instead.
+- **Privacy and cost:** fully local. No code leaves the machine, and it costs nothing per task. It also works offline.
+
+Use it when the cloud agent is unavailable, rate-limited, or not allowed on the code. Keep tasks small and specific,
+for example "fix the failing test in @tests/test_x.py" rather than "refactor the project".
+For heavy tasks, `--provider openrouter` runs the same agent with a much larger model.
+
 ## Benchmark your own machine
 
 ```

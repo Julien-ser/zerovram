@@ -14,7 +14,7 @@ import argparse, difflib, fnmatch, html.parser, json, os, re, subprocess, sys, t
 import urllib.error, urllib.request
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 ROOT = Path.cwd().resolve()
 SKIP = {".git", "node_modules", ".venv", "venv", "site-packages", "__pycache__", ".obsidian", ".trash",
         "dist", "build", ".tinyagent"}
@@ -304,6 +304,8 @@ def system_prompt():
 - Explore before answering: find_files/grep to locate, then read_file. Never guess file contents.
 - Change code with edit_file, copying `old` exactly from read_file output. Use write_file only for new files or rewrites.
 - After changing code, verify it (run the tests or re-read the file) when you can.
+- Do only what the latest user message asks. Never delete or weaken tests to make them pass.
+- If a tool is blocked or the user denies it, stop and tell the user. Do not work around it.
 - Prefer few, targeted tool calls. Paths are relative to the folder.
 - Finish with a short answer: what you found or changed, and the files involved.{project_instructions()}"""
 
@@ -385,17 +387,28 @@ def openai_events(lines):
         yield "call", (s["name"], args)
 
 
+WRITE_TOOLS = {"edit_file", "write_file", "run"}
+
+
+def tool_schema():
+    """In read-only mode, don't even offer the write tools: models keep retrying blocked tools otherwise."""
+    if S.mode == "readonly":
+        return [t for t in TOOL_SCHEMA if t["function"]["name"] not in WRITE_TOOLS]
+    return TOOL_SCHEMA
+
+
 def stream(msgs):
+    TOOLS_NOW = tool_schema()
     base, _, key_env = PROVIDERS[S.provider]
     if S.provider == "ollama":
         base = base if base.startswith("http") else "http://" + base
-        body = {"model": S.model, "messages": to_ollama(msgs), "tools": TOOL_SCHEMA, "stream": True,
+        body = {"model": S.model, "messages": to_ollama(msgs), "tools": TOOLS_NOW, "stream": True,
                 "options": {"num_ctx": S.ctx, "temperature": 0.2}}
         return ollama_events(http_lines(f"{base}/api/chat", body, {}))
     key = os.environ.get(key_env or "", "")
     if not key:
         raise RuntimeError(f"set {key_env} to use --provider {S.provider}")
-    body = {"model": S.model, "messages": msgs, "tools": TOOL_SCHEMA, "stream": True, "temperature": 0.2,
+    body = {"model": S.model, "messages": msgs, "tools": TOOLS_NOW, "stream": True, "temperature": 0.2,
             "stream_options": {"include_usage": True}}
     return openai_events(http_lines(f"{base}/chat/completions", body,
                                     {"Authorization": f"Bearer {key}", "X-Title": "tinyagent"}))
@@ -428,14 +441,21 @@ def elide_old_outputs(keep_last=6):
 
 
 def summarize():
-    """Ask the model for a summary of the work so far, then restart the history from it."""
-    info("  compacting: summarizing the conversation...")
-    req = S.messages + [{"role": "user", "content":
-                         "Summarize this session for yourself in under 200 words: the goal, what was done, files "
-                         "changed, key facts found, and what is left. No tool calls."}]
+    """Summarize everything before the current request, then keep the current request (and its progress) verbatim.
+    Dropping the current request would make the model forget what the user just asked."""
+    users = [i for i, m in enumerate(S.messages) if m["role"] == "user"]
+    cut = users[-1] if users else len(S.messages)
+    head, tail = S.messages[:cut], S.messages[cut:]
+    if len(head) <= 1:  # nothing before the current request to summarize
+        return
+    info("  compacting: summarizing the earlier conversation...")
+    req = head + [{"role": "user", "content":
+                   "Summarize the conversation so far in under 150 words: what the user asked, what was done, files "
+                   "changed, and key facts found. Do not list follow-up tasks. No tool calls."}]
     text = "".join(v for k, v in stream(req) if k == "text")
-    S.messages = [S.messages[0], {"role": "user", "content": f"[Summary of the earlier conversation]\n{text}"},
-                  {"role": "assistant", "content": "Understood. Continuing from the summary."}]
+    S.messages = [S.messages[0],
+                  {"role": "user", "content": f"[Background: summary of the earlier conversation. Not a request.]\n{text}"},
+                  {"role": "assistant", "content": "Noted."}] + tail
     S.last_in = 0
 
 
@@ -461,13 +481,19 @@ def step(n):
     """One model call. Streams text, collects tool calls. Returns the assistant message and its calls."""
     t0, stop = time.time(), threading.Event()
     label = f"[{S.model} step {n}]"
-    threading.Thread(target=ticker, args=(stop, label, t0), daemon=True).start()
+    th = threading.Thread(target=ticker, args=(stop, label, t0), daemon=True)
+    th.start()
     text, calls, stats, first = [], [], {}, None
 
     def clear_ticker():
+        # Erase the timer line exactly once, before any answer text is printed on that line.
+        # (Clearing again after text streams would blank out the start of the answer.)
+        if stop.is_set():
+            return
         stop.set()
+        th.join(timeout=1)
         if TTY:
-            print("\r" + " " * 60 + "\r", end="", file=sys.stderr, flush=True)
+            print("\r" + " " * 70 + "\r", end="", file=sys.stderr, flush=True)
 
     try:
         for kind, val in stream(S.messages):
@@ -536,6 +562,11 @@ def turn(max_steps=int(os.environ.get("TINYAGENT_MAX_STEPS", "25"))):
                 out = "error: you already ran this exact call twice. Use the earlier result or try something different."
             else:
                 out = execute(name, args)
+            # Never let one result overflow the window: Ollama silently drops the start of the prompt when it does.
+            budget = int((S.ctx * 0.8 - max(S.last_in, est_tokens(S.messages))) * 3)
+            if len(out) > max(budget, 800):
+                out = out[:max(budget, 800)] + (f"\n... (cut to fit the context window; {len(out):,} chars total. "
+                                                "Read a smaller range, narrow the search, or compute it with `run`.)")
             recent.append(sig)
             info(f"     {out.splitlines()[0][:100] if out else '(empty)'}  [{len(out):,} chars]")
             S.messages.append({"role": "tool", "tool_call_id": tc["id"], "name": name, "content": out})
@@ -594,7 +625,7 @@ def attach_files(q):
             p = safe(tok)
             if p.is_file():
                 text, _ = read_text(p)
-                extra.append(f"\n\n[Attached {rel(p)}]\n{text[:MAX_OUT]}" + ("\n...(truncated)" if len(text) > MAX_OUT else ""))
+                extra.append(f"\n\n[Attached {rel(p)}: full content below, no need to read_file it]\n{text[:MAX_OUT]}" + ("\n...(truncated)" if len(text) > MAX_OUT else ""))
         except (ValueError, OSError):
             pass
     return q + "".join(extra)

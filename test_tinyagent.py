@@ -86,7 +86,7 @@ assert t.S.messages[1]["content"].startswith("[old output")
 
 # --- @file attachments and the sandbox for them
 q = t.attach_files("explain @notes/release-plan.md and @../secret.txt")
-assert "[Attached notes/release-plan.md]" in q and "phase 2 shipped" in q and "secret" not in q.split("]", 1)[1]
+assert "[Attached notes/release-plan.md:" in q and "phase 2 shipped" in q and "secret" not in q.split("]", 1)[1]
 
 # --- sessions save and resume
 t.S.messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "remember 42"}]
@@ -100,5 +100,33 @@ assert t.execute("nope", {}).startswith("error: unknown tool")
 assert "bad arguments" in t.execute("read_file", {"wrong": 1})
 assert "FileNotFoundError" in t.execute("read_file", {"path": "missing.txt"})
 assert "could not parse" in t.execute("grep", {"_raw": "{bad"})
+
+# --- regression: compaction must keep the user's current request (it was dropped in 0.3.0)
+t.stream = lambda msgs: iter([("text", "earlier: fixed bugs")])
+t.S.messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "old task"},
+                {"role": "assistant", "content": "did it"}, {"role": "user", "content": "NEW QUESTION"},
+                {"role": "assistant", "content": "", "tool_calls": []}]
+t.summarize()
+assert [m["role"] for m in t.S.messages] == ["system", "user", "assistant", "user", "assistant"]
+assert t.S.messages[3]["content"] == "NEW QUESTION" and "Not a request" in t.S.messages[1]["content"]
+
+# --- regression: read-only mode hides write tools from the model
+t.S.mode = "readonly"
+names = {x["function"]["name"] for x in t.tool_schema()}
+assert not names & {"edit_file", "write_file", "run"} and "read_file" in names
+t.S.mode = "yolo"
+assert len(t.tool_schema()) == len(t.TOOL_SCHEMA)
+
+# --- regression: the progress timer is erased once, before the answer, never after it
+import io, contextlib
+t.TTY = True
+t.stream = lambda msgs: iter([("text", "Hello world, this is a long streamed answer line.")])
+t.S.messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "q"}]
+err, out = io.StringIO(), io.StringIO()
+with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+    t.step(1)
+assert err.getvalue().count("\r" + " " * 70) <= 1, "timer line cleared more than once"
+assert out.getvalue().startswith("Hello world"), out.getvalue()[:40]
+t.TTY = False
 
 print("ALL TESTS PASS")
