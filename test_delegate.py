@@ -10,6 +10,8 @@ import delegate as d
 calls = []
 def fake(prompt, max_tokens=600):
     calls.append(prompt)
+    if "search terms" in prompt:
+        return "retr, backoff"
     if "Does this file contain" in prompt:
         return "YES: mentions retries" if "retry" in prompt.split("---", 1)[1] else "NO"
     return f"summary#{len(calls)}"
@@ -48,6 +50,21 @@ out = io.StringIO()
 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
     d.cmd_find("how do retries work?", str(notes), "*.md", 40)
 assert "a.md: mentions retries" in out.getvalue() and "b.md" not in out.getvalue()
+judged = [c for c in calls if "Does this file contain" in c]
+assert not any("lunch menu" in c for c in judged), "a file without keyword hits was sent to the model"
+
+# keyword search sees the whole file: a hit at line 1500 is found, with context lines
+deep = "\n".join(["filler"] * 1500 + ["we tuned the retry budget", "next line"])
+sn = d.snippets(deep, ["retr"])
+assert "1501: we tuned the retry budget" in sn and "1502: next line" in sn
+# regression: a matching heading brings its section body (heading alone was judged irrelevant)
+sec = "\n".join(["x"] * 50 + ["## Retry policy", "", "Retries use exponential backoff, max 5 attempts."] + ["y"] * 30)
+assert "max 5 attempts" in d.snippets(sec, ["retr"])
+
+# regression: a topic deep in a long file shows up through the outline (missed when only the opening was sent)
+long_doc = "intro text\n" + ("filler line\n" * 2000) + "## Prompt Caching\ndetails\n" + "def cache_key(x):\n    pass\n"
+pv = d.preview(long_doc)
+assert "## Prompt Caching" in pv and "def cache_key(x):" in pv and len(pv) < 4500
 
 # unreachable model -> Unreachable (main() turns it into exit code 2)
 import importlib

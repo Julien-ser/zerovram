@@ -192,6 +192,14 @@ Only a short result comes back.
 ```
 python delegate.py summarize FILE [FILE ...] [--focus "..."] [--bullets 8]
 python delegate.py find "QUESTION" FOLDER [--glob "*.md"] [--max-files 40]   # triage: which files matter?
+```
+
+`find` makes one model call to turn the question into keywords, searches every whole file for them (free), and then
+asks the model to judge only the matching passages. A matching heading brings its section body. In one test it searched 17 notes
+in 11 s and returned the single right file. The first version sent only each file's opening, took 2 minutes and
+missed that file, because the topic sat at line 1,106.
+
+```
 python delegate.py ask "QUESTION" FILE [FILE ...]
 ```
 

@@ -118,20 +118,72 @@ def parse_verdict(reply):
     return False, ""
 
 
-def cmd_find(question, folder, glob, max_files, head_chars=3000):
+OUTLINE = __import__("re").compile(r"^\s*(#{1,6} .+|(?:async )?def \w+.*|class \w+.*|function \w+.*)$", __import__("re").M)
+
+
+def preview(text, head_chars=1500, outline_chars=2500):
+    """Opening text plus the whole file's outline (headings, defs, classes). Topics buried deep in a long file
+    still show up in the outline, which the opening alone misses."""
+    outline = "\n".join(m.strip() for m in OUTLINE.findall(text[head_chars:]))
+    return text[:head_chars] + (f"\n\n[Outline of the rest of the file]\n{outline[:outline_chars]}" if outline else "")
+
+
+def keywords(question):
+    """One short model call: turn the question into search terms. Stems catch word variants (cach -> caching)."""
+    reply, _ = cached("kw", [question], lambda: generate(
+        "Give 3 to 6 short search terms for finding text that answers the question below. Use lowercase word stems "
+        "where helpful (e.g. 'cach' for cache/caching). Reply with a comma-separated list only.\n"
+        f"Question: {question}", max_tokens=40))
+    kws = [k.strip().strip("\"'`.").lower() for k in reply.replace("\n", ",").split(",")]
+    return [k for k in kws if 2 < len(k) < 40][:6]
+
+
+def snippets(text, kws, limit=2500, after=4, after_heading=15):
+    """Matching lines plus context. A matching heading brings its section body: the heading alone says too
+    little for the model to judge relevance."""
+    lines = text.splitlines()
+    keep = set()
+    for i, ln in enumerate(lines):
+        if any(k in ln.lower() for k in kws):
+            n = after_heading if ln.lstrip().startswith("#") else after
+            keep.update(range(max(0, i - 1), min(len(lines), i + n + 1)))
+    keep = sorted(j for j in keep if lines[j].strip() or j - 1 not in keep)  # drop runs of blank lines
+    out, last = [], -2
+    for j in keep:
+        if j != last + 1:
+            out.append("...")
+        out.append(f"{j + 1}: {lines[j]}")
+        last = j
+    return "\n".join(out)[:limit]
+
+
+def cmd_find(question, folder, glob, max_files):
     files = list(iter_files(folder, glob))
-    if len(files) > max_files:
-        log(f"  {len(files)} files match; checking the {max_files} most recently modified (raise --max-files for more)")
+    kws = keywords(question)
+    log(f"  keywords: {', '.join(kws) or '(none)'}")
+    scored = []
+    for f in files:  # free pass: plain text search over every whole file, no model involved
+        low = read(f).lower()
+        n = sum(low.count(k) for k in kws)
+        if n:
+            scored.append((n, f))
+    if scored:
+        scored.sort(key=lambda x: -x[0])
+        log(f"  {len(scored)} of {len(files)} files contain a keyword; the model judges the top {min(max_files, len(scored))}")
+        targets = [(f, "matching passages", snippets(read(f), kws)) for _, f in scored[:max_files]]
+    else:  # nothing literal matched: let the model look at openings + outlines instead
+        log(f"  no keyword hits; checking openings + outlines of {min(max_files, len(files))} files")
         files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[:max_files]
+        targets = [(f, "opening + outline", preview(read(f))) for f in files]
     hits = 0
-    for i, f in enumerate(files, 1):
-        head = read(f)[:head_chars]
+    for i, (f, kind, head) in enumerate(targets, 1):
         prompt = (f"Question: {question}\n\nDoes this file contain information that helps answer the question? "
+                  "Say YES only if it addresses the question itself, not merely a related topic. "
                   "Reply with exactly 'YES: <one line on what it contains>' or 'NO'.\n\n"
-                  f"--- {f.name} (first {head_chars} chars) ---\n{head}")
+                  f"--- {f.name} ({kind}) ---\n{head}")
         reply, hit = cached("find", [question, head], lambda: generate(prompt, max_tokens=60))
         ok, reason = parse_verdict(reply)
-        log(f"  [{i}/{len(files)}] {'YES' if ok else 'no '} {f}{' (cache)' if hit else ''}")
+        log(f"  [{i}/{len(targets)}] {'YES' if ok else 'no '} {f}{' (cache)' if hit else ''}")
         if ok:
             hits += 1
             print(f"- {f}: {reason}")
