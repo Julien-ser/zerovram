@@ -33,8 +33,13 @@ flowchart TB
 
     subgraph Tools["tinyagent tools (sandboxed to the current folder)"]
         R["list_dir · find_files<br/>grep · read_file"]
-        W["write_file · run"]
-        G{"You approve?<br/>y / N"}
+        W["edit_file · write_file<br/>run · fetch_url"]
+        G{"You approve?<br/>diff shown · y / n / always"}
+        UN["/undo stack"]
+    end
+
+    subgraph Cloud["Optional cloud backend"]
+        CL["OpenAI-compatible API<br/>OpenRouter · LM Studio · vLLM"]
     end
 
     subgraph Server["Ollama server"]
@@ -57,6 +62,8 @@ flowchart TB
     TA --> W --> G
     R -- "results (capped 6k chars)" --> TA
     G -- "yes" --> TA
+    G -. "backup" .-> UN
+    TA -. "--provider openrouter" .-> CL
     ENV -. "unlocks iGPU" .-> LC
     API --> LC --> IGPU
     IGPU <--> RAM
@@ -137,21 +144,45 @@ journalctl -u ollama | grep "inference compute"   # should show type=iGPU
 Aider only sees files that you `/add`. `tinyagent.py` is a Claude-Code-style agent instead. It lists, finds,
 greps and reads files without being told which ones. It asks you before it writes a file or runs a command.
 
-Its system prompt is about 300 tokens, so each step costs seconds on an iGPU, not minutes. It needs only the Python
-standard library.
+Its system prompt is about 300 tokens, so each step costs seconds on an iGPU, not minutes. It is one file and needs
+only the Python standard library.
 
 ```
-python tinyagent.py                       # interactive, in the current folder
-python tinyagent.py -p "summarize the design notes"
-python test_tinyagent.py                  # sandbox + tool tests, no Ollama needed
+python tinyagent.py                            # interactive, in the current folder
+python tinyagent.py -p "fix the failing test"  # one-shot
+python tinyagent.py -c                         # resume the last session in this folder
+python tinyagent.py --provider openrouter      # same agent, cloud model (needs OPENROUTER_API_KEY)
+python test_tinyagent.py                       # tests, no model or network needed
 ```
 
-On the test machine it answered a "find and summarize" question about a large folder of markdown notes in about 4 minutes.
-It made 6–7 tool calls, ran 100% on the GPU, and used a 16k context. While it works it shows a live timer for each
-step, streams the answer as it is generated, and prints every tool call.
+### Features
 
-qwen3-coder sometimes writes a tool call as plain text (`<function=...>`) instead of a structured call.
-tinyagent detects that and runs the call anyway.
+| Area | What it does |
+|---|---|
+| **Tools** | `list_dir`, `find_files`, `grep`, `read_file` (with line numbers), `edit_file`, `write_file`, `run` (PowerShell on Windows, bash elsewhere), `fetch_url` |
+| **Edits** | `edit_file` replaces an exact snippet: no slow whole-file rewrites. It refuses ambiguous matches, strips line-number prefixes the model copies by mistake, and keeps CRLF/LF line endings |
+| **Safety** | Every path is sandboxed to the current folder. Before an edit you see a colored diff. Modes: `ask` (approve each change), `auto` (edits auto-approved, commands still asked), `yolo`, `readonly`. Answer `a` to always allow a tool for the session |
+| **Undo** | `/undo` reverts the last file change, including deleting files the agent created |
+| **Context** | Old tool output is removed automatically near the context limit. `/compact` summarizes the session |
+| **Sessions** | Every turn is saved to `~/.tinyagent/sessions/`. `-c` resumes |
+| **Backends** | Ollama (default, local) or any OpenAI-compatible API: `--provider openrouter` or `--provider openai` (set `OPENAI_BASE_URL` for LM Studio, vLLM, etc.). Switch mid-session with `/provider` |
+| **Project rules** | Loads `TINYAGENT.md`, `AGENTS.md` or `CLAUDE.md` from the folder, capped at 2,000 characters |
+| **Shortcuts** | `@path/file` attaches a file to your message. `!cmd` runs a command yourself. A line ending in `\` continues the message. `Ctrl+C` stops a turn without quitting |
+| **Robustness** | Recovers tool calls the model writes as plain text (`<function=...>`). Stops repeated identical calls. Turns tool errors into messages the model can act on |
+| **Progress** | A live timer while the model reads, streamed answers, every tool call with a one-line result, and tokens and speed per step |
+
+Commands: `/help`, `/status`, `/mode`, `/model`, `/provider`, `/ctx`, `/undo`, `/compact`, `/clear`, `/quit`.
+
+Settings (environment variables): `TINYAGENT_MODEL`, `TINYAGENT_CTX` (default 16384), `TINYAGENT_MODE`,
+`TINYAGENT_PROVIDER`, `TINYAGENT_OPENROUTER_MODEL` (default `qwen/qwen3-coder`), `TINYAGENT_MAX_OUT`,
+`TINYAGENT_MAX_STEPS`.
+
+### Measured on the test machine (qwen3-coder:30b, Iris Xe)
+
+- **Bug fix:** a two-bug Python file. The agent read both files, fixed them with one `edit_file`, ran the tests, and
+  got exit 0. Total 114 s. After the first step, each step started answering in 1–6 s because Ollama reuses the cached
+  prompt prefix.
+- **Research:** "find and summarize" over a large folder of markdown notes. Six tool calls, about 4 minutes.
 
 ## Benchmark your own machine
 
