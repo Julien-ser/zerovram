@@ -184,6 +184,34 @@ Settings (environment variables): `TINYAGENT_MODEL`, `TINYAGENT_CTX` (default 16
   prompt prefix.
 - **Research:** "find and summarize" over a large folder of markdown notes. Six tool calls, about 4 minutes.
 
+### Multi-file builds: write a plan first
+
+With a 16k context, the model can't hold the HTML, the JavaScript and the server at the same time. On a new
+multi-file project the names that connect them drift: the JS looks up an id the HTML never defined, or listens for an
+event the server never sends. Each file looks fine on its own, and the page does nothing. So the system prompt now asks
+for a `PLAN.md` first, with every file's job and the exact connecting names (ids, routes, events). The model re-reads it
+before each file, then checks its work.
+
+One-shot benchmark, same model and task, old vs new prompt. The task: a live web dashboard (Flask + Socket.IO,
+simulation on the server, click the map to request a job, the server assigns the nearest free worker and streams
+progress). Graded by a static check (do JS, HTML and server agree on ids and events?) plus a runtime probe (connect,
+send one request, watch 5 s):
+
+| | Old prompt | New prompt (plan first) |
+|---|---|---|
+| Time, steps | 846 s, 10 | 704 s, 14 |
+| Wrote `PLAN.md` | no | yes |
+| Ids and events agree, page loads | yes | yes |
+| Request assigns a worker | yes | yes |
+| Live updates after the request | **none**: the simulation thread crashed on its first update | 22 in 5 s, worker reaches the target and goes idle |
+
+Two things still need you. Neither version tested a real request: each "verified" by echoing a success message.
+Neither modeled the energy drain the task implied. That's one run each, so read it as a direction, not a measurement.
+
+The benchmark also exposed a harness bug, now fixed. When the model started a dev server whose reloader spawns a
+child process, the child kept the output pipe open, and `run` hung forever despite its timeout. `run` now kills the
+whole process tree on timeout.
+
 ## delegate.py: save a cloud agent's tokens
 
 Cloud agents pay for every token they read. `delegate.py` lets them, or you, hand bulk reading to the local model.

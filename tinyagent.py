@@ -226,12 +226,23 @@ def run(command, timeout=120):
     if not ok:
         return why
     argv = ["powershell", "-NoProfile", "-Command", command] if WIN else ["bash", "-lc", command]
+    p = subprocess.Popen(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         encoding="utf-8", errors="replace", start_new_session=not WIN)
     try:
-        r = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, timeout=int(timeout),
-                           encoding="utf-8", errors="replace")
-        return f"exit {r.returncode}\n{r.stdout}{r.stderr}".strip()
+        out, _ = p.communicate(timeout=int(timeout))
+        return f"exit {p.returncode}\n{out}".strip()
     except subprocess.TimeoutExpired:
-        return f"error: command timed out after {timeout}s"
+        # kill the whole tree: a server's child (e.g. a reloader) keeps the pipe open and would hang us forever
+        if WIN:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True)
+        else:
+            os.killpg(p.pid, 9)
+        try:
+            out, _ = p.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            out = ""
+        return (f"error: command timed out after {timeout}s and was stopped (with its child processes). A server never exits: to test one, start "
+                f"it in the background, request it, then stop it.\n{(out or '')[-2000:]}").strip()
 
 
 class _Text(html.parser.HTMLParser):
@@ -307,7 +318,11 @@ def system_prompt():
     return f"""You are tinyagent, a coding agent in the folder {ROOT} ({'Windows' if WIN else sys.platform}; `run` uses {SHELL}).
 - Explore before answering: find_files/grep to locate, then read_file. Never guess file contents.
 - Change code with edit_file, copying `old` exactly from read_file output. Use write_file only for new files or rewrites.
-- After changing code, verify it (run the tests or re-read the file) when you can.
+- Building something new across several files: FIRST write PLAN.md with each file's job, the exact names that connect
+  them (HTML ids, routes, event names, function signatures) and the key design decisions. Re-read PLAN.md before
+  writing each file and use exactly those names. Your memory is short; PLAN.md is how the files stay consistent.
+- After changing code, verify it: run it or its tests. For a web UI, grep that every id, route and event name the JS
+  uses exists in the HTML and the server, and fix any mismatch before you finish.
 - Do only what the latest user message asks. Never delete or weaken tests to make them pass.
 - If a tool is blocked or the user denies it, stop and tell the user. Do not work around it.
 - To count, filter or aggregate data in files, write a short Python script and run it; do not read everything yourself.

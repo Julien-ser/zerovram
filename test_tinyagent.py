@@ -1,5 +1,5 @@
 """Run: python test_tinyagent.py  (no model or network needed)"""
-import json, os, sys, tempfile
+import json, os, sys, tempfile, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -53,6 +53,11 @@ assert "read-only" in t.edit_file("app.py", "def f", "def h")
 assert "read-only" in t.run("echo hi")
 t.S.mode = "yolo"
 assert "exit 0" in t.run("echo hi") and "hi" in t.run("echo hi")
+# a server whose child process keeps the output pipe open must still time out (was: hung forever)
+t0 = time.time()
+srv = "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); time.sleep(60)"
+assert "timed out" in t.run(("& " if t.WIN else "") + f'"{sys.executable}" -c "{srv}"', timeout=2)
+assert time.time() - t0 < 15, time.time() - t0
 
 # --- recovering tool calls written as text
 raw = "Let me search.\n\n<function=find_files>\n<parameter=pattern>\n*release*\n</parameter>\n</function>\n</tool_call>"
